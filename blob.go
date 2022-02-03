@@ -9,27 +9,70 @@ import (
 	"os"
 
 	"gocloud.dev/blob"
-	"gocloud.dev/blob/fileblob"
-
-	_ "gocloud.dev/blob/gcsblob"
+	_ "gocloud.dev/blob/fileblob"
 	_ "gocloud.dev/blob/s3blob"
+	"gopkg.in/ini.v1"
+)
+
+const (
+	secretsFileName = "../../../d/odin/odin/odin_service_filesraw/secrets"
 )
 
 func main() {
-	// Connect to a bucket when your program starts up.
-	// This example uses the file-based implementation.
-	dir, cleanup := newTempDir()
-	defer cleanup()
+	storeURL := ""
+	useLocal := true
+	ctx := context.Background()
 
-	// Create the file-based bucket.
-	bucket, err := fileblob.OpenBucket(dir, nil)
+	if useLocal {
+		// Connect to a bucket when your program starts up.
+		// This example uses the file-based implementation.
+		dir, cleanup := newTempDir()
+		defer cleanup()
+		storeURL = "file://" + dir
+	} else {
+		cfg, err := ini.Load(secretsFileName)
+		if err != nil {
+			log.Fatal(err)
+		}
+		os.Setenv("AWS_ACCESS_KEY_ID", cfg.Section("").Key("AWS_ACCESS_KEY_ID").String())
+		os.Setenv("AWS_SECRET_ACCESS_KEY", cfg.Section("").Key("AWS_SECRET_ACCESS_KEY").String())
+		storeURL = "s3://odintest-filesraw?endpoint=fra1.digitaloceanspaces.com&region=us-east-1"
+	}
+
+	// Create the bucket.
+	bucket, err := blob.OpenBucket(context.Background(), storeURL)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer bucket.Close()
 
+	// clean the bucket
+	var clean func(context.Context, *blob.Bucket, string)
+	clean = func(ctx context.Context, b *blob.Bucket, prefix string) {
+		iter := b.List(&blob.ListOptions{
+			Delimiter: "/",
+			Prefix:    prefix,
+		})
+		for {
+			obj, err := iter.Next(ctx)
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				log.Fatal(err)
+			}
+			if obj.IsDir {
+				clean(ctx, b, obj.Key)
+			} else {
+				fmt.Printf("rm %s\n", obj.Key)
+				b.Delete(ctx, obj.Key)
+			}
+		}
+	}
+	clean(ctx, bucket, "")
+	fmt.Printf("clean!\n\n")
+
 	// Create some blob objects in a hierarchy.
-	ctx := context.Background()
 	for _, key := range []string{
 		"testFile1",
 		"t/t/t",
